@@ -1,3 +1,10 @@
+<<<<<<< HEAD
 data/
 *.sif
 *.out
+=======
+container.sif
+data/
+slurm*
+.env
+>>>>>>> 5f79467 (Fix model/train.py)
