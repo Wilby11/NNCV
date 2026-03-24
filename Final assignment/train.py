@@ -66,7 +66,8 @@ def get_args_parser():
     parser.add_argument("--num-workers", type=int, default=10, help="Number of workers for data loaders")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--experiment-id", type=str, default="unet-training", help="Experiment ID for Weights & Biases")
-
+    # Wilbur addition: Argument for loading a pre-trained model
+    parser.add_argument("--pretrained-model", type=str, default=None, help="checkpoints/Baseline_model/best_model-epoch=0074-val_loss=0.29058183170855045.pt")
     return parser
 
 
@@ -143,6 +144,11 @@ def main(args):
         in_channels=3,  # RGB images
         n_classes=19,  # 19 classes in the Cityscapes dataset
     ).to(device)
+
+    # Wilbur addition: Load pre-trained model if specified
+    if args.pretrained_model:
+        model.load_state_dict(torch.load(args.pretrained_model, map_location=device))
+        print(f"Loaded pre-trained model from {args.pretrained_model}")
 
     # Define the loss function
     criterion = nn.CrossEntropyLoss(ignore_index=255)  # Ignore the void class
