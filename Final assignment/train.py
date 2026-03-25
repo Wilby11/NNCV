@@ -28,7 +28,11 @@ from torchvision.transforms.v2 import (
     Resize,
     ToImage,
     ToDtype,
-    InterpolationMode
+    InterpolationMode,
+    ColorJitter,
+    RandomApply,
+    GaussianBlur,
+    RandomAdjustSharpness
 )
 
 from model import Model
@@ -92,19 +96,34 @@ def main(args):
     # Define the device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Define the transforms to apply to the data
+    # Define the transforms to apply to the data; these transforms are applied to the images in the Cityscapes dataset
     img_transform = Compose([
-    ToImage(),
-    Resize((256, 256)),
-    ToDtype(torch.float32, scale=True),
-    Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        # Convert images to PIL format
+        ToImage(),
+        
+        # Data augmentation transforms (before resizing!)
+        ColorJitter(0.3, 0.3, 0.3, 0.05),  # varies brightness, contrast, saturation, and hue
+        RandomApply([GaussianBlur(3)], p=0.2), # applies Gaussian blur with 20% probability
+        RandomAdjustSharpness(2, p=0.2), # adjusts sharpness with 20% probability
+        
+        # Resize images to 320x224 using bilinear interpolation
+        Resize((320, 224), interpolation=InterpolationMode.BILINEAR), # (width and height must be multiples of 16)
+        # Convert images to torch float32 format and scale values to [0, 1]
+        ToDtype(torch.float32, scale=True),
+        # Normalize the images by subtracting the mean and dividing by the standard deviation
+        # The mean and standard deviation are calculated from the entire Cityscapes dataset
+        Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
     ])
 
     # Target transform (mask)
+    # These transforms are applied to the masks in the Cityscapes dataset
+    # They are used to convert the masks to PIL format, resize them to 506x320,
+    # and convert them to torch int64 format without scaling
+    # The transformed masks are used in the training progress to compare to output images
     target_transform = Compose([
-        ToImage(),
-        Resize((256, 256), interpolation=InterpolationMode.NEAREST),
-        ToDtype(torch.int64),  # no scaling
+        ToImage(),  # Convert masks to PIL format
+        Resize((320, 224), interpolation=InterpolationMode.NEAREST),  # Resize masks to 320x224 (width and height must be multiples of 16)
+        ToDtype(torch.int64),  # Convert masks to torch int64 format without scaling
     ])
 
     # Load the dataset and make a split for training and validation
@@ -150,8 +169,38 @@ def main(args):
         model.load_state_dict(torch.load(args.pretrained_model, map_location=device))
         print(f"Loaded pre-trained model from {args.pretrained_model}")
 
+    # Wilbur addition: Alternative loss function 'total_loss'
+    def dice_loss(p, y, eps=1e-6):
+        # p: (B,C,H,W), probs after softmax
+        # y: (B,C,H,W), one-hot
+        num = 2 * (p * y).sum(dim=(2,3))
+        den = (p + y).sum(dim=(2,3)) + eps
+        return 1 - (num / den).mean()
+    def tv_loss(p):
+        dx = torch.abs(p[:, :, 1:, :] - p[:, :, :-1, :]).mean()
+        dy = torch.abs(p[:, :, :, 1:] - p[:, :, :, :-1]).mean()
+        return dx + dy
+        
+    import torch.nn.functional as F
+    def total_loss(logits, target, ignore_index=255, λ1=1.0, λ2=0.1):
+        mask = (target != ignore_index)
+        ce = F.cross_entropy(logits, target, ignore_index=ignore_index)
+
+        target_onehot = F.one_hot(target.clamp(0,18), num_classes=logits.shape[1]).permute(0,3,1,2).float()
+        pred = F.softmax(logits, dim=1)
+
+        mask = mask.unsqueeze(1).float()
+        pred_masked = pred * mask
+        target_masked = target_onehot * mask
+
+        dice = dice_loss(pred_masked, target_masked, eps=1e-6)
+        tv = tv_loss(pred * mask)  # optional
+        return ce + λ1 * dice + λ2 * tv
+
+    criterion = total_loss
+
     # Define the loss function
-    criterion = nn.CrossEntropyLoss(ignore_index=255)  # Ignore the void class
+    # criterion = nn.CrossEntropyLoss(ignore_index=255)  # Ignore the void class
 
     # Define the optimizer
     optimizer = AdamW(model.parameters(), lr=args.lr)
