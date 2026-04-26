@@ -21,6 +21,12 @@ from torchvision.transforms.v2 import (
     Normalize,
     InterpolationMode,
 )
+import albumentations
+from albumentations import (
+    CLAHE, 
+    Sharpen, 
+    Compose as AlbumentationsCompose,
+)
 
 from model import Model
 
@@ -32,19 +38,51 @@ IMAGE_DIR = "/data"
 OUTPUT_DIR = "/output"
 MODEL_PATH = "/app/model.pt"
 
+#####################################################
+### DEFINE POSTPROCESSING FUNCTIONS FOR IMAGE AUGMENTATIONS
+#####################################################
+
+# Define the transforms to apply to the data; these transforms are applied to the images in the Cityscapes dataset
+base_img_numpy_transforms = AlbumentationsCompose([
+    CLAHE(clip_limit=(1,4), tile_grid_size=(8,8), p=1), # By far the most effective augmentation (visually at least), so this should be applied to every single image
+    Sharpen(alpha=(0.7,0.8), p=1), # Sharpen the image to enhance edges and details, which can help the model learn better features from the augmented images
+], is_check_shapes=False)
+
+base_img_torch_transform = Compose([
+    ToImage(),
+    Resize((256, 512), interpolation=InterpolationMode.BILINEAR),
+    ToDtype(torch.float32, scale=True),
+    Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+])
+
+def combined_augmentation(image, np_transforms, to_transforms):
+        """
+        Apply augmentations: first numpy-based (RandomFog, RandomRain),
+        then torch-based (resize, normalize, etc.)
+        """
+        image_np = np.array(image, dtype=np.uint8)
+        image_np = np_transforms(image=image_np)['image']
+        image = torch.from_numpy(image_np).float() / 255.0  # Back to [0,1]
+        image = image.permute(2, 0, 1)  # H,W,C → C,H,W
+        
+        image = to_transforms(image)
+        
+        return image
+
+    # Create wrapper functions for the image transforms
+    def base_image_transform(image):
+        """Apply base preprocessing: CLAHE + Sharpen (numpy), then resize + normalize (torch)"""
+        return combined_augmentation(image, base_img_numpy_transforms, base_img_torch_transform)
+
+#####################################################
+### DEFINE PREPROCESSING AND POSTPROCESSING
+#####################################################
 
 def preprocess(img: Image.Image) -> torch.Tensor:
     # Implement your preprocessing steps here
-    # For example, resizing, normalization, etc.
+    # Apply base image transforms: numpy-based (CLAHE + Sharpen) then torch-based (resize + normalize)
     # Return a tensor suitable for model input
-    transform = Compose([
-        ToImage(),
-        Resize(size=(256, 256), interpolation=InterpolationMode.BILINEAR),
-        ToDtype(dtype=torch.float32, scale=True),
-        Normalize(mean=(0.5,), std=(0.5,)),
-    ])
-
-    img = transform(img)
+    img = base_image_transform(img)
     img = img.unsqueeze(0)  # Add batch dimension
     return img
 
